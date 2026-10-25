@@ -47,12 +47,16 @@ The mod loads the sounds from `fh2-mods\HonkHonk\` into memory when the game sta
 
 The game's own audio engine is not used, so the sound is not tied to the car's position and does not change with the camera, distance or surroundings. It plays at a steady volume, like any other app on your PC.
 
-**Version 2.0 is planned to relay on game's audio engine**
+**Version 2.0 is planned to relay on game's audio engine.**
 
 ## Online play
 
 Today HonkHonk plays sounds only on your own PC. It has no effect in online sessions: other players cannot hear your horn, even if they have the mod installed.
 Future builds will target using game engine and usage with online mods.
+
+## Known issues
+
+- Horn sound preview selector is not updating, will be fixed using functionality upcoming with new FH2 Mod Platform version.
 
 ## Settings file
 
