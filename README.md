@@ -21,13 +21,16 @@ Since v0.3.0 the horn is played by the **game's own audio engine** as a 3D sound
 ## Installation
 
 1. Close the game.
-2. Copy the contents of the `fh2-mods` folder from this package into the `fh2-mods` folder of your FH2 Mod Platform, merging when asked. You should end up with:
+2. Copy the contents of the `fh2-mods` folder into the `fh2-mods` folder of your Mod Platform, merging when asked:
    ```
    fh2-mods\HonkHonk.dll
    fh2-mods\HonkHonk.ini
-   fh2-mods\HonkHonk\   (the 31 .wav files)
+   fh2-mods\HonkHonk\HZ2_SFX_HonkHonk.bank
    ```
-3. Start the game. `fh2-mods\platform.log` should show HonkHonk registered with no errors.
+3. Start the game. `fh2-mods\platform.log` should show `HonkHonk initialized` and `FMOD horn: engine captured`.
+
+Upgrading from v0.3.1 or older: delete the old `fh2-mods\HonkHonk\*.wav` files; they are no longer used. Keep your existing `HonkHonk.ini`.
+
 
 ## Using it
 
@@ -58,7 +61,8 @@ Future builds will target using game engine and usage with online mods.
 
 ## Known issues
 
-- There is a short gap when a short sound (for example Car or Truck) restarts its loop while you hold the stick. This is planned to be fixed in v0.3.2.
+- The loops of Car, Truck, Train and Warthog are smoothed but may still not be perfect.
+- The horn does not get the tunnel/room reverb that the car's own sounds get.
 - The horn is heard only on your PC. Other players cannot hear it yet; online support is planned and needs cooperation with the FH2MP project.
 - The "Horn options" page from v0.2.x was removed until the Mod Platform 2.8.0 is not released.
 
