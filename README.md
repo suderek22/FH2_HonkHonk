@@ -1,7 +1,8 @@
-# MOD NOT UPDATED TO AZUMITH V1.0+ AND EXTRA OPTIONS 3+
-# HonkHonk will be rebuiled in following weeks to run directly on game audio engine, instead of windows play methods.
+# HonkHonk was rebuiled to run directly on game audio engine, instead of windows play methods.
 
-A proof of concept mod for Forza Horizon 2 (Azimuth 1.0.0.64) that lets you play a horn sound while driving. Click the **left stick** of your controller and the selected sound plays, looping for as long as you hold the stick down and stopping when you release it. Choose from 31 included sounds.
+A mod for Forza Horizon 2 (Azimuth 1.0.0.64) that lets you play a horn sound while driving. Click the **left stick** (L3) and the selected sound plays, looping while you hold the stick and stopping when you release it. 31 sounds are included.
+
+Since v0.3.0 the horn is played by the **game's own audio engine** as a 3D sound coming from your car: it is panned by the camera, gets quieter with distance and uses the game's audio mix.
 
 ## Features
 
@@ -14,7 +15,7 @@ A proof of concept mod for Forza Horizon 2 (Azimuth 1.0.0.64) that lets you play
 ## Requirements
 
 - Forza Horizon 2 running through Azimuth, version 1.0.0.64.
-- [FH2 Mod Platform](https://github.com/Trinculo54/FH2-Mod-Platform) v2.7.1 or newer.
+- [FH2 Mod Platform](https://github.com/Trinculo54/FH2-Mod-Platform) v2.7.4 or newer.
 - A controller (XInput compatible).
 
 ## Installation
@@ -57,7 +58,9 @@ Future builds will target using game engine and usage with online mods.
 
 ## Known issues
 
-- Horn sound preview selector is not updating, will be fixed using functionality upcoming with new FH2 Mod Platform version.
+- There is a short gap when a short sound (for example Car or Truck) restarts its loop while you hold the stick. This is planned to be fixed in v0.3.2.
+- The horn is heard only on your PC. Other players cannot hear it yet; online support is planned and needs cooperation with the FH2MP project.
+- The "Horn options" page from v0.2.x was removed until the Mod Platform 2.8.0 is not released.
 
 ## Settings file
 
