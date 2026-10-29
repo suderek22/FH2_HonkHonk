@@ -1,4 +1,4 @@
-#include "HonkHonkAudio.h"
+#include "FmodHorn.h"
 #include "fh2mod.h"
 
 #include <windows.h>
@@ -21,9 +21,7 @@ namespace {
 
 constexpr char kSettingEnabled[] = "HornEnabled";
 constexpr char kSettingHornSound[] = "HornSound";
-constexpr char kMenuPageKey[] = "HonkHonkOptions";
-constexpr char kSelectedHornRow[] = "SelectedHorn";
-constexpr char kPreviewHornRow[] = "PlayHorn";
+constexpr wchar_t kBankName[] = L"HZ2_SFX_HonkHonk.bank";
 constexpr wchar_t kIniName[] = L"HonkHonk.ini";
 constexpr wchar_t kIniSection[] = L"HonkHonk";
 constexpr wchar_t kEnabledKey[] = L"HornEnabled";
@@ -67,8 +65,6 @@ constexpr std::array<HornDefinition, 31> kHornDefinitions = {{
     {L"Spiderman.wav", "Spiderman"},
     {L"Wow.wav", "Wow"},
 }};
-std::array<HornAudio, kHornDefinitions.size()> g_horns;
-std::array<std::atomic<bool>, kHornDefinitions.size()> g_horn_ready{};
 
 const FH2ModApi* g_api = nullptr;
 FH2Mod* g_mod = nullptr;
@@ -114,8 +110,6 @@ void save_selected_horn(int selected) {
     save_config_value(kSelectedHornKey, std::to_wstring(selected).c_str());
 }
 
-void refresh_menu_page();
-
 void select_horn(int selected) {
     if (selected < 0 ||
         selected >= static_cast<int>(kHornDefinitions.size())) {
@@ -127,39 +121,6 @@ void select_horn(int selected) {
     if (g_api && g_api->api_version >= 5 && g_mod && g_api->set_slider) {
         g_api->set_slider(g_mod, kSettingHornSound,
                           static_cast<float>(selected));
-    }
-    refresh_menu_page();
-}
-
-void refresh_menu_page() {
-    if (!g_api || !g_mod || !g_api->set_page_rows) {
-        return;
-    }
-
-    const int selected = g_selected_horn.load(std::memory_order_relaxed);
-    FH2PageRow rows[2]{};
-    rows[0].size = sizeof(FH2PageRow);
-    rows[0].key = kSelectedHornRow;
-    rows[0].label = "Horn sound";
-    rows[0].value = kHornDefinitions[selected].name;
-    const int next = (selected + 1) % static_cast<int>(kHornDefinitions.size());
-    const std::string selection_description =
-        std::string(kHornDefinitions[selected].name) +
-        " is selected. Press A to switch to " +
-        kHornDefinitions[next].name + ".";
-    rows[0].description = selection_description.c_str();
-    rows[0].style = FH2_ROW_NORMAL;
-
-    rows[1].size = sizeof(FH2PageRow);
-    rows[1].key = kPreviewHornRow;
-    rows[1].label = "Play selected horn";
-    rows[1].value = "A";
-    rows[1].description =
-        "Preview the selected horn sound without driving.";
-    rows[1].style = FH2_ROW_NORMAL;
-
-    if (!g_api->set_page_rows(g_mod, kMenuPageKey, rows, 2)) {
-        log_message("Failed to refresh the horn selection menu.");
     }
 }
 
@@ -182,32 +143,6 @@ void on_horn_sound_changed(void*, const char* key, float value) {
         return;
     }
     select_horn(static_cast<int>(value + 0.5f));
-}
-
-void on_page_open(void*, const char*) {
-    refresh_menu_page();
-}
-
-void on_page_select(void*, const char*, const char* row_key) {
-    if (!row_key) {
-        return;
-    }
-
-    if (std::strcmp(row_key, kSelectedHornRow) == 0) {
-        const int next =
-            (g_selected_horn.load(std::memory_order_relaxed) + 1) %
-            static_cast<int>(kHornDefinitions.size());
-        select_horn(next);
-        return;
-    }
-
-    if (std::strcmp(row_key, kPreviewHornRow) == 0) {
-        const int selected = g_selected_horn.load(std::memory_order_relaxed);
-        if (!g_horn_ready[selected].load(std::memory_order_acquire) ||
-            !play_horn(g_horns[selected])) {
-            log_message("The selected horn sound is not ready for playback.");
-        }
-    }
 }
 
 void __fastcall detour_speedometer_update(void* self, float rpm) {
@@ -240,32 +175,6 @@ bool gameplay_active(std::uint64_t now) {
            now - speedometer_tick < kGameplayTickTimeoutMs;
 }
 
-void load_horn_files() {
-    for (std::size_t index = 0; index < kHornDefinitions.size(); ++index) {
-        const std::filesystem::path path =
-            g_mod_directory / L"HonkHonk" / kHornDefinitions[index].file;
-        std::wstring error;
-        if (!load_wave(path, g_horns[index], error)) {
-            std::wstring message = L"HonkHonk could not load ";
-            message += kHornDefinitions[index].file;
-            message += L": ";
-            message += error;
-            OutputDebugStringW(message.c_str());
-            const int utf8_size = WideCharToMultiByte(
-                CP_UTF8, 0, message.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            if (utf8_size > 1) {
-                std::string utf8(static_cast<std::size_t>(utf8_size), '\0');
-                WideCharToMultiByte(
-                    CP_UTF8, 0, message.c_str(), -1, utf8.data(),
-                    utf8_size, nullptr, nullptr);
-                log_message(utf8.c_str());
-            }
-            continue;
-        }
-        g_horn_ready[index].store(true, std::memory_order_release);
-    }
-}
-
 void install_gameplay_hooks() {
     if (!g_api || g_api->api_version < 3 || !g_api->wait_for_code ||
         !g_api->hook_function || !g_api->enable_hooks ||
@@ -281,6 +190,9 @@ void install_gameplay_hooks() {
     }
 
     auto* base = static_cast<std::uint8_t*>(game_base);
+    fmodhorn::install(g_api, g_mod, game_base,
+                      g_mod_directory / L"HonkHonk" / kBankName,
+                      static_cast<int>(kHornDefinitions.size()));
     FH2Hook* dynamics_hook = g_api->hook_function(
         g_mod, "HonkHonk: CCarDynamics::UpdateDynamics",
         base + 0x12C1EA0,
@@ -307,11 +219,8 @@ void install_gameplay_hooks() {
 }
 
 void horn_worker() {
-    load_horn_files();
     install_gameplay_hooks();
 
-    int requested_horn = -1;
-    bool playback_started = false;
     for (;;) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(kControllerPollMs));
@@ -330,29 +239,8 @@ void horn_worker() {
         const bool should_play =
             left_stick_held && g_enabled.load(std::memory_order_relaxed) &&
             gameplay_active(GetTickCount64());
-        if (!should_play) {
-            if (playback_started) {
-                stop_horn();
-            }
-            requested_horn = -1;
-            playback_started = false;
-            continue;
-        }
-
-        const int selected = g_selected_horn.load(std::memory_order_relaxed);
-        if (selected != requested_horn) {
-            if (playback_started) {
-                stop_horn();
-                playback_started = false;
-            }
-            requested_horn = selected;
-            if (g_horn_ready[selected].load(std::memory_order_acquire)) {
-                playback_started = play_horn_loop(g_horns[selected]);
-            }
-            if (!playback_started) {
-                log_message("Could not start the selected horn sound.");
-            }
-        }
+        fmodhorn::request(
+            should_play ? g_selected_horn.load(std::memory_order_relaxed) : -1);
     }
 }
 
@@ -367,10 +255,10 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
     FH2ModInfo info{};
     info.size = sizeof(info);
     info.name = "HonkHonk";
-    info.version = "0.2.4";
-    info.github_repo = nullptr;
+    info.version = "0.3.3";
+    info.github_repo = "suderek22/FH2_HonkHonk";
     info.platform_version = "2.7.1";
-    info.check_updates = 0;
+    info.check_updates = 1;
     info.description =
         "Hold the left stick while driving to play the selected horn.";
 
@@ -421,6 +309,17 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
         g_enabled.store(enabled_value == 1, std::memory_order_relaxed);
         g_selected_horn.store(selected_value, std::memory_order_relaxed);
     }
+    {
+        wchar_t buf[32] = {};
+        GetPrivateProfileStringW(read_section, L"HornVolume", L"1.0", buf, 32,
+                                 read_ini_path.c_str());
+        float volume = static_cast<float>(_wtof(buf));
+        if (!(volume >= 0.0f && volume <= 4.0f)) volume = 1.0f;
+        fmodhorn::set_volume(volume);
+        if (GetPrivateProfileStringW(kIniSection, L"HornVolume", L"", buf, 32,
+                                     g_ini_path.c_str()) == 0)
+            save_config_value(L"HornVolume", L"1.0");
+    }
     save_config_value(
         kEnabledKey, g_enabled.load(std::memory_order_relaxed) ? L"1" : L"0");
     save_selected_horn(g_selected_horn.load(std::memory_order_relaxed));
@@ -467,25 +366,6 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
         }
     } else {
         log_message("The platform slider API is unavailable; use A on Horn sound to switch horns.");
-    }
-
-    if (api->api_version >= 8 && api->add_page && api->set_page_rows) {
-        FH2Page page{};
-        page.size = sizeof(page);
-        page.key = kMenuPageKey;
-        page.title = "HonkHonk";
-        page.label = "Horn options";
-        page.description =
-            "Choose a horn sound and preview it before driving.";
-        page.on_open = on_page_open;
-        page.on_select = on_page_select;
-        if (!api->add_page(g_mod, &page)) {
-            log_message("Could not add the horn selection and preview page.");
-        } else {
-            refresh_menu_page();
-        }
-    } else {
-        log_message("The platform menu page API is unavailable; horn selection and preview are unavailable.");
     }
 
     try {
