@@ -248,6 +248,7 @@ bool load_file(int index) {
 // proves that the engine is positioning the sound against its own listener.
 std::atomic<const void*> g_car{nullptr};
 std::atomic<std::uint64_t> g_car_tick{0};
+std::atomic<bool> g_hud_hooked{false};
 
 bool car_position(Vec* out) {
     const auto* car = static_cast<const std::uint8_t*>(g_car.load());
@@ -379,12 +380,18 @@ bool install(const FH2ModApi* api, FH2Mod* mod, void* game_base,
                                            g_base + 0x783E67, hud_hook, nullptr);
         if (!h || !api->enable_hooks(mod, h))
             logf("FMOD horn: car position hook failed; using the camera.");
+        else
+            g_hud_hooked.store(true);
     }
     logf("FMOD horn: hook installed.");
     return true;
 }
 
 bool ready() { return g_ready.load(std::memory_order_acquire); }
+
+bool hud_hooked() { return g_hud_hooked.load(); }
+
+std::uint64_t hud_tick() { return g_car_tick.load(); }
 
 void set_volume(float v) { g_volume.store(v); }
 

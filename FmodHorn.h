@@ -2,6 +2,7 @@
 
 #include "fh2mod.h"
 
+#include <cstdint>
 #include <filesystem>
 
 // Plays horns through the game's own FMOD engine (3D positional sound).
@@ -22,5 +23,11 @@ void set_volume(float volume);
 
 // index < 0 stops the horn. The horn loops while requested.
 void request(int index);
+
+// True when the car position hook (game+0x783E67, in HUDSpeedometerComponent::Update) is active.
+bool hud_hooked();
+
+// GetTickCount64() of the last speedometer update with a car, from that hook (0 = none yet).
+std::uint64_t hud_tick();
 
 } // namespace fmodhorn

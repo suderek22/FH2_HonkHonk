@@ -74,12 +74,9 @@ std::filesystem::path g_ini_path;
 std::atomic<bool> g_enabled{true};
 std::atomic<int> g_selected_horn{0};
 std::atomic<std::uint64_t> g_last_physics_tick{0};
-std::atomic<std::uint64_t> g_last_speedometer_tick{0};
 
-using SpeedometerUpdateFn = void(__fastcall*)(void*, float);
 using CarDynamicsUpdateFn =
     bool(__fastcall*)(void*, void*, void*, std::uint32_t, float);
-SpeedometerUpdateFn g_original_speedometer_update = nullptr;
 CarDynamicsUpdateFn g_original_car_dynamics_update = nullptr;
 
 void log_message(const char* message) {
@@ -146,15 +143,6 @@ void on_horn_sound_changed(void*, const char* key, float value) {
     select_horn(static_cast<int>(value + 0.5f));
 }
 
-void __fastcall detour_speedometer_update(void* self, float rpm) {
-    if (g_original_speedometer_update) {
-        g_original_speedometer_update(self, rpm);
-    }
-    if (self) {
-        g_last_speedometer_tick.store(GetTickCount64(), std::memory_order_relaxed);
-    }
-}
-
 bool __fastcall detour_car_dynamics_update(
     void* self, void* second, void* third, std::uint32_t fourth, float delta_time) {
     const bool result = g_original_car_dynamics_update
@@ -200,11 +188,15 @@ bool game_pad_buttons(unsigned short* buttons) {
 bool gameplay_active(std::uint64_t now) {
     const std::uint64_t physics_tick =
         g_last_physics_tick.load(std::memory_order_relaxed);
-    const std::uint64_t speedometer_tick =
-        g_last_speedometer_tick.load(std::memory_order_relaxed);
-    return physics_tick != 0 && speedometer_tick != 0 &&
-           now - physics_tick < kGameplayTickTimeoutMs &&
-           now - speedometer_tick < kGameplayTickTimeoutMs;
+    if (physics_tick == 0 || now - physics_tick >= kGameplayTickTimeoutMs) {
+        return false;
+    }
+    // The speedometer's update, from the car position hook in HUDSpeedometerComponent::Update. Without that hook only the physics tick counts.
+    if (!fmodhorn::hud_hooked()) {
+        return true;
+    }
+    const std::uint64_t speedometer_tick = fmodhorn::hud_tick();
+    return speedometer_tick != 0 && now - speedometer_tick < kGameplayTickTimeoutMs;
 }
 
 void install_gameplay_hooks() {
@@ -231,20 +223,17 @@ void install_gameplay_hooks() {
         base + 0x12C1EA0,
         reinterpret_cast<void*>(detour_car_dynamics_update),
         reinterpret_cast<void**>(&g_original_car_dynamics_update));
-    FH2Hook* speedometer_hook = g_api->hook_function(
-        g_mod, "HonkHonk: HUDStatusSpeedometer::UpdateGauges",
-        base + 0xAD6070,
-        reinterpret_cast<void*>(detour_speedometer_update),
-        reinterpret_cast<void**>(&g_original_speedometer_update));
+    // No hook on HUDStatusSpeedometer::UpdateGauges (game+0xAD6070): on Windows its detour ended in a jump to freed memory on the first
+    // speedometer update (crash reports from 2026-10-30 on, also with NitroSystem's hook there). The car position hook at game+0x783E67 runs
+    // in the same HUDSpeedometerComponent::Update just before that call and gives the same tick (fmodhorn::hud_tick).
 
-    if (!dynamics_hook || !speedometer_hook) {
-        log_message("Could not create both gameplay-detection hooks; horn input is disabled.");
+    if (!dynamics_hook) {
+        log_message("Could not create the gameplay-detection hook; horn input is disabled.");
         return;
     }
-    if (!g_api->enable_hooks(g_mod, dynamics_hook) ||
-        !g_api->enable_hooks(g_mod, speedometer_hook)) {
+    if (!g_api->enable_hooks(g_mod, dynamics_hook)) {
         g_api->disable_hooks(g_mod, nullptr);
-        log_message("Could not enable gameplay-detection hooks; horn input is disabled.");
+        log_message("Could not enable the gameplay-detection hook; horn input is disabled.");
         return;
     }
 
