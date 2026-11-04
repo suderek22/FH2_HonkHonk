@@ -2,7 +2,6 @@
 #include "fh2mod.h"
 
 #include <windows.h>
-#include <xinput.h>
 
 #include <array>
 #include <atomic>
@@ -28,6 +27,8 @@ constexpr wchar_t kEnabledKey[] = L"HornEnabled";
 constexpr wchar_t kSelectedHornKey[] = L"SelectedHorn";
 constexpr DWORD kGameplayTickTimeoutMs = 250;
 constexpr DWORD kControllerPollMs = 16;
+// The horn button as the game reports it (the XInput button mask): the left stick click, XINPUT_GAMEPAD_LEFT_THUMB.
+constexpr unsigned short kHornButton = 0x0040;
 struct HornDefinition {
     const wchar_t* file;
     const char* name;
@@ -165,6 +166,37 @@ bool __fastcall detour_car_dynamics_update(
     return result;
 }
 
+// The game's active controller, read from its own input state like Extra Options does, so no XInputGetState polling.
+// XInputGetState costs 0.5-0.8 ms per call under Wine/Proton (even for empty slots); four slots every 16 ms was a sixth of a core and
+// constant wineserver traffic, and lagged full lobbies. Layout: input manager at game+0x365D7C8 (vtable game+0x2E7A2E8), active controller
+// pointer at manager+0xAB28 inside the array of 8 controllers of 0x1300 bytes from manager+0x10, connected byte at +4, button mask at +0xC0.
+std::atomic<std::uint8_t*> g_game_image{nullptr};
+
+bool game_pad_buttons(unsigned short* buttons) {
+    const std::uint8_t* image = g_game_image.load(std::memory_order_relaxed);
+    if (!image) return false;
+    __try {
+        const auto* manager =
+            *reinterpret_cast<const std::uint8_t* const*>(image + 0x365D7C8);
+        if (!manager ||
+            *reinterpret_cast<const void* const*>(manager) != image + 0x2E7A2E8) {
+            return false;
+        }
+        const auto* controller =
+            *reinterpret_cast<const std::uint8_t* const*>(manager + 0xAB28);
+        const std::uintptr_t first = reinterpret_cast<std::uintptr_t>(manager) + 0x10;
+        const std::uintptr_t selected = reinterpret_cast<std::uintptr_t>(controller);
+        if (selected < first || selected >= first + 8 * 0x1300 ||
+            (selected - first) % 0x1300 != 0 || controller[4] != 1) {
+            return false;
+        }
+        *buttons = *reinterpret_cast<const std::uint16_t*>(controller + 0xC0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool gameplay_active(std::uint64_t now) {
     const std::uint64_t physics_tick =
         g_last_physics_tick.load(std::memory_order_relaxed);
@@ -190,6 +222,7 @@ void install_gameplay_hooks() {
     }
 
     auto* base = static_cast<std::uint8_t*>(game_base);
+    g_game_image.store(base, std::memory_order_relaxed);
     fmodhorn::install(g_api, g_mod, game_base,
                       g_mod_directory / L"HonkHonk" / kBankName,
                       static_cast<int>(kHornDefinitions.size()));
@@ -225,19 +258,11 @@ void horn_worker() {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(kControllerPollMs));
 
-        bool left_stick_held = false;
-        for (DWORD user_index = 0; user_index < XUSER_MAX_COUNT; ++user_index) {
-            XINPUT_STATE state{};
-            const bool connected =
-                XInputGetState(user_index, &state) == ERROR_SUCCESS;
-            left_stick_held =
-                left_stick_held ||
-                (connected &&
-                 (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0);
-        }
+        unsigned short buttons = 0;
+        const bool horn_held = game_pad_buttons(&buttons) && (buttons & kHornButton) != 0;
 
         const bool should_play =
-            left_stick_held && g_enabled.load(std::memory_order_relaxed) &&
+            horn_held && g_enabled.load(std::memory_order_relaxed) &&
             gameplay_active(GetTickCount64());
         fmodhorn::request(
             should_play ? g_selected_horn.load(std::memory_order_relaxed) : -1);
