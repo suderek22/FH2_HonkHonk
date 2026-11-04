@@ -24,10 +24,10 @@ void set_volume(float volume);
 // index < 0 stops the horn. The horn loops while requested.
 void request(int index);
 
-// True when the car position hook (game+0x783E67, in HUDSpeedometerComponent::Update) is active.
+// Whether the car-position instruction hook is enabled.
 bool hud_hooked();
 
-// GetTickCount64() of the last speedometer update with a car, from that hook (0 = none yet).
+// Last HUD update with a car, in GetTickCount64 milliseconds (0 = unavailable).
 std::uint64_t hud_tick();
 
 } // namespace fmodhorn

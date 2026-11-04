@@ -269,10 +269,13 @@ bool car_position(Vec* out) {
 void hud_hook(FH2Context* ctx, void*) {
     const void* hud = reinterpret_cast<const void*>(ctx->rdi);
     __try {
-        g_car.store(*reinterpret_cast<void* const*>(
-            static_cast<const std::uint8_t*>(hud) + 0xE8));
-        g_car_tick.store(GetTickCount64());
+        const void* car = *reinterpret_cast<void* const*>(
+            static_cast<const std::uint8_t*>(hud) + 0xE8);
+        g_car.store(car);
+        g_car_tick.store(car ? GetTickCount64() : 0);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_car.store(nullptr);
+        g_car_tick.store(0);
     }
 }
 
@@ -383,6 +386,8 @@ bool install(const FH2ModApi* api, FH2Mod* mod, void* game_base,
         else
             g_hud_hooked.store(true);
     }
+    if (!g_hud_hooked.load())
+        logf("FMOD horn: HUD tick unavailable; using physics-only horn input detection.");
     logf("FMOD horn: hook installed.");
     return true;
 }

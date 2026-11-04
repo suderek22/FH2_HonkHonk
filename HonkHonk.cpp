@@ -27,8 +27,7 @@ constexpr wchar_t kEnabledKey[] = L"HornEnabled";
 constexpr wchar_t kSelectedHornKey[] = L"SelectedHorn";
 constexpr DWORD kGameplayTickTimeoutMs = 250;
 constexpr DWORD kControllerPollMs = 16;
-// The horn button as the game reports it (the XInput button mask): the left stick click, XINPUT_GAMEPAD_LEFT_THUMB.
-constexpr unsigned short kHornButton = 0x0040;
+constexpr std::uint16_t kHornButton = 0x0040; // Left stick click in the game's button mask.
 struct HornDefinition {
     const wchar_t* file;
     const char* name;
@@ -74,6 +73,7 @@ std::filesystem::path g_ini_path;
 std::atomic<bool> g_enabled{true};
 std::atomic<int> g_selected_horn{0};
 std::atomic<std::uint64_t> g_last_physics_tick{0};
+std::atomic<std::uint8_t*> g_game_image{nullptr};
 
 using CarDynamicsUpdateFn =
     bool(__fastcall*)(void*, void*, void*, std::uint32_t, float);
@@ -116,9 +116,12 @@ void select_horn(int selected) {
     }
     g_selected_horn.store(selected, std::memory_order_relaxed);
     save_selected_horn(selected);
-    if (g_api && g_api->api_version >= 5 && g_mod && g_api->set_slider) {
-        g_api->set_slider(g_mod, kSettingHornSound,
-                          static_cast<float>(selected));
+    if (g_api && g_mod) {
+        if (g_api->api_version >= 9 && g_api->set_setting)
+            g_api->set_setting(g_mod, kSettingHornSound, selected);
+        else if (g_api->api_version >= 5 && g_api->set_slider)
+            g_api->set_slider(g_mod, kSettingHornSound,
+                              static_cast<float>(selected));
     }
 }
 
@@ -131,6 +134,15 @@ void on_enabled_changed(void*, const char* key, int value) {
 
     g_enabled.store(value == 1, std::memory_order_relaxed);
     save_config_value(kEnabledKey, value == 1 ? L"1" : L"0");
+}
+
+void on_horn_choice_changed(void*, const char* key, int value) {
+    if (!key || std::strcmp(key, kSettingHornSound) != 0 || value < 0 ||
+        value >= static_cast<int>(kHornDefinitions.size())) {
+        log_message("Ignored invalid HornSound menu setting.");
+        return;
+    }
+    select_horn(value);
 }
 
 void on_horn_sound_changed(void*, const char* key, float value) {
@@ -154,13 +166,9 @@ bool __fastcall detour_car_dynamics_update(
     return result;
 }
 
-// The game's active controller, read from its own input state like Extra Options does, so no XInputGetState polling.
-// XInputGetState costs 0.5-0.8 ms per call under Wine/Proton (even for empty slots); four slots every 16 ms was a sixth of a core and
-// constant wineserver traffic, and lagged full lobbies. Layout: input manager at game+0x365D7C8 (vtable game+0x2E7A2E8), active controller
-// pointer at manager+0xAB28 inside the array of 8 controllers of 0x1300 bytes from manager+0x10, connected byte at +4, button mask at +0xC0.
-std::atomic<std::uint8_t*> g_game_image{nullptr};
-
-bool game_pad_buttons(unsigned short* buttons) {
+// Read the active pad from the game's input snapshot instead of polling XInput
+// for all user slots, which is expensive under Wine/Proton.
+bool game_pad_buttons(std::uint16_t* buttons) {
     const std::uint8_t* image = g_game_image.load(std::memory_order_relaxed);
     if (!image) return false;
     __try {
@@ -191,10 +199,7 @@ bool gameplay_active(std::uint64_t now) {
     if (physics_tick == 0 || now - physics_tick >= kGameplayTickTimeoutMs) {
         return false;
     }
-    // The speedometer's update, from the car position hook in HUDSpeedometerComponent::Update. Without that hook only the physics tick counts.
-    if (!fmodhorn::hud_hooked()) {
-        return true;
-    }
+    if (!fmodhorn::hud_hooked()) return true;
     const std::uint64_t speedometer_tick = fmodhorn::hud_tick();
     return speedometer_tick != 0 && now - speedometer_tick < kGameplayTickTimeoutMs;
 }
@@ -207,7 +212,7 @@ void install_gameplay_hooks() {
         return;
     }
 
-    void* game_base = g_api->wait_for_code(30000);
+    void* game_base = g_api->wait_for_code(120000);
     if (!game_base) {
         log_message("Timed out waiting for the game code; horn input is unavailable.");
         return;
@@ -215,24 +220,25 @@ void install_gameplay_hooks() {
 
     auto* base = static_cast<std::uint8_t*>(game_base);
     g_game_image.store(base, std::memory_order_relaxed);
-    fmodhorn::install(g_api, g_mod, game_base,
+    if (!fmodhorn::install(g_api, g_mod, game_base,
                       g_mod_directory / L"HonkHonk" / kBankName,
-                      static_cast<int>(kHornDefinitions.size()));
+                      static_cast<int>(kHornDefinitions.size()))) {
+        log_message("Could not install horn audio; horn input is disabled.");
+        return;
+    }
     FH2Hook* dynamics_hook = g_api->hook_function(
         g_mod, "HonkHonk: CCarDynamics::UpdateDynamics",
         base + 0x12C1EA0,
         reinterpret_cast<void*>(detour_car_dynamics_update),
         reinterpret_cast<void**>(&g_original_car_dynamics_update));
-    // No hook on HUDStatusSpeedometer::UpdateGauges (game+0xAD6070): on Windows its detour ended in a jump to freed memory on the first
-    // speedometer update (crash reports from 2026-10-30 on, also with NitroSystem's hook there). The car position hook at game+0x783E67 runs
-    // in the same HUDSpeedometerComponent::Update just before that call and gives the same tick (fmodhorn::hud_tick).
-
+    // Reuse the car-position instruction hook's HUD tick. Do not detour
+    // UpdateGauges: Windows crash reports implicate its trampoline.
     if (!dynamics_hook) {
         log_message("Could not create the gameplay-detection hook; horn input is disabled.");
         return;
     }
     if (!g_api->enable_hooks(g_mod, dynamics_hook)) {
-        g_api->disable_hooks(g_mod, nullptr);
+        g_api->disable_hooks(g_mod, dynamics_hook);
         log_message("Could not enable the gameplay-detection hook; horn input is disabled.");
         return;
     }
@@ -247,7 +253,7 @@ void horn_worker() {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(kControllerPollMs));
 
-        unsigned short buttons = 0;
+        std::uint16_t buttons = 0;
         const bool horn_held = game_pad_buttons(&buttons) && (buttons & kHornButton) != 0;
 
         const bool should_play =
@@ -269,9 +275,9 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
     FH2ModInfo info{};
     info.size = sizeof(info);
     info.name = "HonkHonk";
-    info.version = "0.3.3";
+    info.version = "0.4.0";
     info.github_repo = "suderek22/FH2_HonkHonk";
-    info.platform_version = "2.7.1";
+    info.platform_version = "2.8.0";
     info.check_updates = 1;
     info.description =
         "Hold the left stick while driving to play the selected horn.";
@@ -353,20 +359,31 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
         }
     }
 
-    if (api->api_version >= 5 && api->add_setting) {
+    if (api->api_version >= 9 && api->add_setting) {
+        const char* names[kHornDefinitions.size()];
+        for (size_t i = 0; i < kHornDefinitions.size(); ++i)
+            names[i] = kHornDefinitions[i].name;
+        FH2Setting setting{};
+        setting.size = sizeof(setting);
+        setting.key = kSettingHornSound;
+        setting.label = "Horn sound";
+        setting.description = "Choose the horn played with the left stick.";
+        setting.kind = FH2_SETTING_CHOICE;
+        setting.value = g_selected_horn.load(std::memory_order_relaxed);
+        setting.choices = names;
+        setting.choice_count = static_cast<uint32_t>(kHornDefinitions.size());
+        setting.on_change = on_horn_choice_changed;
+        if (!api->add_setting(g_mod, &setting)) {
+            log_message("Could not add the Horn sound selector to the Mods menu.");
+        }
+    } else if (api->api_version >= 5 && api->add_setting) {
         FH2Setting setting{};
         setting.size = sizeof(setting);
         setting.key = kSettingHornSound;
         setting.label = "Horn sound";
         setting.description =
-            "Slider values: 0 = Car, 1 = Truck, 2 = Classic, 3 = Train, "
-            "4 = Warthog, 5 = Bicycle, 6 = Reversing, 7 = Police, "
-            "8 = Boat, 9 = Doom, 10 = Doorbell, 11 = Honk, 12 = Horse, "
-            "13 = Quack, 14 = Rooster, 15 = Starter, 16 = Teams, "
-            "17 = WindowsXP, 18 = Wololo, 19 = Augh, 20 = Bad to the bone, "
-            "21 = Bruh, 22 = DejaVu, 23 = Discord, 24 = DJ, 25 = Goofy, "
-            "26 = Lego, 27 = MGS, 28 = Social credit, 29 = Spiderman, "
-            "30 = Wow.";
+            "Slider value 0-30 (Car, Truck, Classic, Train, Warthog, ...). "
+            "Update the FH2 Mod Platform to 2.8.0 for a named selector.";
         setting.kind = FH2_SETTING_SLIDER;
         setting.min = 0.0f;
         setting.max = static_cast<float>(kHornDefinitions.size() - 1);
@@ -378,8 +395,6 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
         if (!api->add_setting(g_mod, &setting)) {
             log_message("Could not add the Horn sound slider to the Mods menu.");
         }
-    } else {
-        log_message("The platform slider API is unavailable; use A on Horn sound to switch horns.");
     }
 
     try {
