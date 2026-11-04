@@ -16,7 +16,6 @@ Since v0.3.0 the horn is played by the **game's own audio engine** as a 3D sound
 
 - Forza Horizon 2 running through Azimuth, version 1.0.0.64.
 - [FH2 Mod Platform](https://github.com/Trinculo54/FH2-Mod-Platform) v2.7.4 or newer.
-- A controller (XInput compatible).
 
 ## Installation
 
@@ -48,23 +47,17 @@ Car, Truck, Classic, Train, Warthog, Bicycle, Reversing, Police, Boat, Doom, Doo
 
 ## How it works
 
-The mod loads the sounds from `fh2-mods\HonkHonk\` into memory when the game starts and plays them through Windows audio. It checks your controller for a left-stick click and uses two game hooks, the car physics update and the speedometer update, to know that you are driving. The horn is only triggered when both are active.
+The mod loads the sounds from `fh2-mods\HonkHonk\` into memory when the game starts and plays them through Windows audio. It checks your controller for a left-stick click and uses hook to the car physics update,to know that you are driving. The horn is only triggered when both are active.
 
-The game's own audio engine is not used, so the sound is not tied to the car's position and does not change with the camera, distance or surroundings. It plays at a steady volume, like any other app on your PC.
-
-**Version 2.0 is planned to relay on game's audio engine.**
 
 ## Online play
 
-Today HonkHonk plays sounds only on your own PC. It has no effect in online sessions: other players cannot hear your horn, even if they have the mod installed.
-Future builds will target using game engine and usage with online mods.
+**HonkHonk already works with online, and issues were adjusted in version 0.4.0.**
 
 ## Known issues
 
 - The loops of Car, Truck, Train and Warthog are smoothed but may still not be perfect.
 - The horn does not get the tunnel/room reverb that the car's own sounds get.
-- The horn is heard only on your PC. Other players cannot hear it yet; online support is planned and needs cooperation with the FH2MP project.
-- The "Horn options" page from v0.2.x was removed until the Mod Platform 2.8.0 is not released.
 
 ## Settings file
 
