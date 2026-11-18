@@ -1,6 +1,6 @@
 # HonkHonk was rebuilt to run directly on game audio engine, instead of windows play methods.
 
-A mod for Forza Horizon 2 (Azimuth 1.0.0.64) that lets you play a horn sound while driving. Click the **left stick** (L3) and the selected sound plays, looping while you hold the stick and stopping when you release it. 31 sounds are included.
+A mod for Forza Horizon 2 (Azimuth 1.0.0.64) that lets you play a horn sound while driving. Click the **left stick** (L3) and the selected sound plays, looping while you hold the stick and stopping when you release it. 47 sounds are included.
 
 Since v0.3.0 the horn is played by the **game's own audio engine** as a 3D sound coming from your car: it is panned by the camera, gets quieter with distance and uses the game's audio mix.
 
