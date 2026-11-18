@@ -115,6 +115,102 @@ void test_ticks() {
     check(fmodhorn::hud_tick() == 0, "Unreadable HUD clears tick");
 }
 
+struct ChoiceRow {
+    std::string key;
+    std::vector<std::string> names;
+    int value;
+    FH2SettingChangedFn on_change;
+};
+std::vector<ChoiceRow> choice_rows;
+unsigned mock_choice_limit = 32;
+int mock_add_setting(FH2Mod*, const FH2Setting* setting) {
+    if (setting->kind != FH2_SETTING_CHOICE || setting->choice_count < 2 ||
+        setting->choice_count > mock_choice_limit) return 0;
+    ChoiceRow row{setting->key, {}, setting->value, setting->on_change};
+    for (unsigned i = 0; i < setting->choice_count; ++i)
+        row.names.emplace_back(setting->choices[i]);
+    choice_rows.push_back(row);
+    return 1;
+}
+void mock_set_setting(FH2Mod*, const char* key, int value) {
+    for (auto& row : choice_rows) if (row.key == key) row.value = value;
+}
+
+void test_selector() {
+    FH2ModApi api{};
+    api.api_version = 9;
+    api.add_setting = mock_add_setting;
+    api.set_setting = mock_set_setting;
+    api.log = mock_log;
+    g_api = &api;
+    int handle = 0;
+    g_mod = reinterpret_cast<FH2Mod*>(&handle);
+    g_ini_path = std::filesystem::temp_directory_path() /
+        (L"HonkHonk-selector-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
+    struct Cleanup {
+        ~Cleanup() { std::filesystem::remove(g_ini_path); }
+    } cleanup;
+    // Simulate API 9/10's real 32-choice limit, modern 100-choice hosts,
+    // and a modern host that refuses the long row and needs the fallback.
+    for (int mode = 0; mode < 5; ++mode) {
+        api.api_version = mode == 0 ? 9 : mode == 1 ? 10 : mode == 3 ? 12 : 11;
+        mock_choice_limit = mode < 2 || mode == 4 ? 32 : 100;
+        const bool single = mode == 2 || mode == 3;
+        for (int initial : {0, 7, 10, 11, 30, 31, 46}) {
+            choice_rows.clear();
+            g_selected_horn.store(initial);
+            check(add_horn_choice_settings(&api, g_mod), "Selectors accepted by host limit");
+            check(g_single_horn_selector == single, "Correct layout chosen for host");
+            check(choice_rows.size() == (single ? 1 : 2), "Expected number of named rows");
+            if (single) {
+                check(choice_rows[0].names.size() == kHornDefinitions.size(), "Single row contains all sounds");
+                check(choice_rows[0].value == initial, "Single row restores saved bank index");
+            } else {
+                check(choice_rows[0].names.size() == 32, "Legacy first row fits old platform");
+                for (int row = 0; row < 2; ++row) {
+                    const int offset = row * kHornsPerChoiceRow;
+                    check(choice_rows[row].value == (initial >= offset &&
+                        initial < offset + static_cast<int>(choice_rows[row].names.size()) - 1
+                        ? initial - offset + 1 : 0), "Saved index restored in correct legacy row");
+                }
+            }
+        }
+        for (int selected = 0; selected < static_cast<int>(kHornDefinitions.size()); ++selected) {
+            const int row = single ? 0 : selected / kHornsPerChoiceRow;
+            const int local = single ? selected : selected % kHornsPerChoiceRow + 1;
+            auto& entry = choice_rows[row];
+            check(entry.names[local] == kHornDefinitions[selected].name, "Choice name matches bank index");
+            entry.on_change(nullptr, entry.key.c_str(), local);
+            check(g_selected_horn.load() == selected, "Every choice selects correct audio");
+            check(entry.value == local, "Selected row synchronized");
+            if (!single) check(choice_rows[1-row].value == 0, "Other row marked inactive");
+            check(GetPrivateProfileIntW(kIniSection, kSelectedHornKey, -1, g_ini_path.c_str()) == selected,
+                  "Selection saved without changing bank indexes");
+        }
+        const int last = static_cast<int>(kHornDefinitions.size()) - 1;
+        for (auto& entry : choice_rows) {
+            entry.on_change(nullptr, entry.key.c_str(), -1);
+            check(g_selected_horn.load() == last, "Negative value ignored");
+            entry.on_change(nullptr, entry.key.c_str(), static_cast<int>(entry.names.size()));
+            check(g_selected_horn.load() == last, "Out of range choice ignored");
+            if (!single) {
+                entry.on_change(nullptr, entry.key.c_str(), 0);
+                check(g_selected_horn.load() == last, "Inactive indicator preserves selection");
+            }
+        }
+        on_horn_choice_changed(nullptr, "InvalidKey", 1);
+        check(g_selected_horn.load() == last, "Unknown selector key ignored");
+        on_horn_choice_changed(nullptr, nullptr, 1);
+        check(g_selected_horn.load() == last, "Null selector key ignored");
+        if (single) {
+            on_horn_choice_changed(nullptr, kSettingHornSoundExtra, 1);
+            check(g_selected_horn.load() == last, "Legacy extra row key ignored in single mode");
+        }
+    }
+    g_api = nullptr;
+    g_mod = nullptr;
+}
+
 void test_hooks(const std::filesystem::path& bank_directory) {
     FH2ModApi api{};
     api.api_version = 9;
@@ -167,6 +263,7 @@ int main(int argc, char** argv) {
         image = game_image.data();
         test_input(manager);
         test_ticks();
+        test_selector();
         test_hooks(std::filesystem::path(argv[1]));
         std::cout << "Passed " << checks << " gameplay/input/hook checks.\n";
         return 0;

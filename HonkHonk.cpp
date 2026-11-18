@@ -20,6 +20,10 @@ namespace {
 
 constexpr char kSettingEnabled[] = "HornEnabled";
 constexpr char kSettingHornSound[] = "HornSound";
+constexpr char kSettingHornSoundExtra[] = "HornSoundExtra";
+// Reserve one choice for the inactive row indicator.
+constexpr int kLegacyChoiceLimit = 32;
+constexpr int kHornsPerChoiceRow = kLegacyChoiceLimit - 1;
 constexpr wchar_t kBankName[] = L"HZ2_SFX_HonkHonk.bank";
 constexpr wchar_t kIniName[] = L"HonkHonk.ini";
 constexpr wchar_t kIniSection[] = L"HonkHonk";
@@ -32,7 +36,7 @@ struct HornDefinition {
     const wchar_t* file;
     const char* name;
 };
-constexpr std::array<HornDefinition, 31> kHornDefinitions = {{
+constexpr std::array<HornDefinition, 47> kHornDefinitions = {{
     {L"Car.wav", "Car"},
     {L"Truck.wav", "Truck"},
     {L"Classic.wav", "Classic"},
@@ -41,6 +45,10 @@ constexpr std::array<HornDefinition, 31> kHornDefinitions = {{
     {L"Bicycle.wav", "Bicycle"},
     {L"Reversing.wav", "Reversing"},
     {L"Police.wav", "Police"},
+    {L"Police2.wav", "Police2"},
+    {L"Police3.wav", "Police3"},
+    {L"Martinshorn.wav", "Martinshorn"},
+    {L"Firetruck.wav", "Firetruck"},
     {L"Boat.wav", "Boat"},
     {L"Doom.wav", "Doom"},
     {L"Doorbell.wav", "Doorbell"},
@@ -64,6 +72,18 @@ constexpr std::array<HornDefinition, 31> kHornDefinitions = {{
     {L"Social credit.wav", "Social credit"},
     {L"Spiderman.wav", "Spiderman"},
     {L"Wow.wav", "Wow"},
+    {L"Cat.wav", "Cat"},
+    {L"Meow.wav", "Meow"},
+    {L"Siren.wav", "Siren"},
+    {L"SleighBells.wav", "SleighBells"},
+    {L"Wheelspin.wav", "Wheelspin"},
+    {L"Win10.wav", "Win10"},
+    {L"Xbox.wav", "Xbox"},
+    {L"Nyooom.wav", "Nyooom"},
+    {L"La Cucaracha.wav", "La Cucaracha"},
+    {L"Cyberpunk.wav", "Cyberpunk"},
+    {L"Rizz.wav", "Rizz"},
+    {L"Stinky.wav", "Stinky"},
 }};
 
 const FH2ModApi* g_api = nullptr;
@@ -72,6 +92,7 @@ std::filesystem::path g_mod_directory;
 std::filesystem::path g_ini_path;
 std::atomic<bool> g_enabled{true};
 std::atomic<int> g_selected_horn{0};
+bool g_single_horn_selector = false; // Menu layout chosen during initialization.
 std::atomic<std::uint64_t> g_last_physics_tick{0};
 std::atomic<std::uint8_t*> g_game_image{nullptr};
 
@@ -117,9 +138,16 @@ void select_horn(int selected) {
     g_selected_horn.store(selected, std::memory_order_relaxed);
     save_selected_horn(selected);
     if (g_api && g_mod) {
-        if (g_api->api_version >= 9 && g_api->set_setting)
-            g_api->set_setting(g_mod, kSettingHornSound, selected);
-        else if (g_api->api_version >= 5 && g_api->set_slider)
+        if (g_api->api_version >= 9 && g_api->set_setting) {
+            if (g_single_horn_selector) {
+                g_api->set_setting(g_mod, kSettingHornSound, selected);
+                return;
+            }
+            g_api->set_setting(g_mod, kSettingHornSound,
+                selected < kHornsPerChoiceRow ? selected + 1 : 0);
+            g_api->set_setting(g_mod, kSettingHornSoundExtra,
+                selected >= kHornsPerChoiceRow ? selected - kHornsPerChoiceRow + 1 : 0);
+        } else if (g_api->api_version >= 5 && g_api->set_slider)
             g_api->set_slider(g_mod, kSettingHornSound,
                               static_cast<float>(selected));
     }
@@ -137,12 +165,81 @@ void on_enabled_changed(void*, const char* key, int value) {
 }
 
 void on_horn_choice_changed(void*, const char* key, int value) {
-    if (!key || std::strcmp(key, kSettingHornSound) != 0 || value < 0 ||
-        value >= static_cast<int>(kHornDefinitions.size())) {
+    const bool first = key && std::strcmp(key, kSettingHornSound) == 0;
+    const bool extra = key && std::strcmp(key, kSettingHornSoundExtra) == 0;
+    if (g_single_horn_selector) {
+        if (!first || value < 0 || value >= static_cast<int>(kHornDefinitions.size())) {
+            log_message("Ignored invalid HornSound menu setting.");
+            return;
+        }
+        select_horn(value);
+        return;
+    }
+    const int offset = extra ? kHornsPerChoiceRow : 0;
+    const int count = extra
+        ? static_cast<int>(kHornDefinitions.size()) - offset : kHornsPerChoiceRow;
+    if ((!first && !extra) || value < 0 || value > count) {
         log_message("Ignored invalid HornSound menu setting.");
         return;
     }
-    select_horn(value);
+    // The inactive indicator is not a sound; restore the current selection.
+    select_horn(value == 0 ? g_selected_horn.load(std::memory_order_relaxed)
+                           : offset + value - 1);
+}
+
+// API 11 (2.9.1) allows 100 choices. Older named selectors allow only 32.
+// Keep the legacy row size fixed even when building against newer headers.
+bool add_horn_choice_settings(const FH2ModApi* api, FH2Mod* mod) {
+    g_single_horn_selector = false;
+    if (api->api_version >= 11) {
+        const char* names[kHornDefinitions.size()];
+        for (size_t i = 0; i < kHornDefinitions.size(); ++i)
+            names[i] = kHornDefinitions[i].name;
+        FH2Setting setting{};
+        setting.size = sizeof(setting);
+        setting.key = kSettingHornSound;
+        setting.label = "Horn sound";
+        setting.description = "Choose a horn with left/right, or press A to open the sound list.";
+        setting.kind = FH2_SETTING_CHOICE;
+        setting.value = g_selected_horn.load(std::memory_order_relaxed);
+        setting.choices = names;
+        setting.choice_count = static_cast<uint32_t>(kHornDefinitions.size());
+        setting.on_change = on_horn_choice_changed;
+        if (api->add_setting(mod, &setting)) {
+            g_single_horn_selector = true;
+            log_message("Horn selector: one named row (platform 2.9.1+).");
+            return true;
+        }
+        log_message("Single horn selector refused; falling back to two named rows.");
+    }
+    const char* keys[] = {kSettingHornSound, kSettingHornSoundExtra};
+    const char* labels[] = {"Horn sound (1/2)", "Horn sound (2/2)"};
+    bool added = true;
+    const int selected = g_selected_horn.load(std::memory_order_relaxed);
+    for (int row = 0; row < 2; ++row) {
+        const int offset = row * kHornsPerChoiceRow;
+        const int remaining = static_cast<int>(kHornDefinitions.size()) - offset;
+        const int count = remaining < kHornsPerChoiceRow ? remaining : kHornsPerChoiceRow;
+        const char* names[kLegacyChoiceLimit] = {};
+        names[0] = "(using other row)";
+        for (int i = 0; i < count; ++i) names[i + 1] = kHornDefinitions[offset + i].name;
+        FH2Setting setting{};
+        setting.size = sizeof(setting);
+        setting.key = keys[row];
+        setting.label = labels[row];
+        setting.description = "Choose a horn in either row. The other row becomes inactive.";
+        setting.kind = FH2_SETTING_CHOICE;
+        setting.value = selected >= offset && selected < offset + count
+            ? selected - offset + 1 : 0;
+        setting.choices = names;
+        setting.choice_count = static_cast<uint32_t>(count + 1);
+        setting.on_change = on_horn_choice_changed;
+        if (!api->add_setting(mod, &setting)) {
+            log_message("Could not add a Horn sound selector to the Mods menu.");
+            added = false;
+        }
+    }
+    return added;
 }
 
 void on_horn_sound_changed(void*, const char* key, float value) {
@@ -275,7 +372,7 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
     FH2ModInfo info{};
     info.size = sizeof(info);
     info.name = "HonkHonk";
-    info.version = "0.4.0";
+    info.version = "1.0.0";
     info.github_repo = "suderek22/FH2_HonkHonk";
     info.platform_version = "2.8.0";
     info.check_updates = 1;
@@ -360,29 +457,14 @@ FH2MOD_EXPORT int fh2mod_init(const FH2ModApi* api) {
     }
 
     if (api->api_version >= 9 && api->add_setting) {
-        const char* names[kHornDefinitions.size()];
-        for (size_t i = 0; i < kHornDefinitions.size(); ++i)
-            names[i] = kHornDefinitions[i].name;
-        FH2Setting setting{};
-        setting.size = sizeof(setting);
-        setting.key = kSettingHornSound;
-        setting.label = "Horn sound";
-        setting.description = "Choose the horn played with the left stick.";
-        setting.kind = FH2_SETTING_CHOICE;
-        setting.value = g_selected_horn.load(std::memory_order_relaxed);
-        setting.choices = names;
-        setting.choice_count = static_cast<uint32_t>(kHornDefinitions.size());
-        setting.on_change = on_horn_choice_changed;
-        if (!api->add_setting(g_mod, &setting)) {
-            log_message("Could not add the Horn sound selector to the Mods menu.");
-        }
+        add_horn_choice_settings(api, g_mod);
     } else if (api->api_version >= 5 && api->add_setting) {
         FH2Setting setting{};
         setting.size = sizeof(setting);
         setting.key = kSettingHornSound;
         setting.label = "Horn sound";
         setting.description =
-            "Slider value 0-30 (Car, Truck, Classic, Train, Warthog, ...). "
+            "Slider value 0-46 (Car, Truck, Classic, Train, Warthog, ...). "
             "Update the FH2 Mod Platform to 2.8.0 for a named selector.";
         setting.kind = FH2_SETTING_SLIDER;
         setting.min = 0.0f;
